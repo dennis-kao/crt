@@ -1,7 +1,9 @@
 library(pheatmap)
 library(RColorBrewer)
 library(edgeR)   
-library(readr)
+library(tidyverse)
+library(GO.db)
+library(org.Hs.eg.db)
 
 trios = c("12.1","14.1","14.2","17.1","18.1","26.1","28.1","5.1","6.1","9.1","40.1","40.2","4.1")
 
@@ -79,12 +81,11 @@ linkage_region7 = c("PEX11G", "C19orf45", "ZNF358", "MCOLN1", "PNPLA6", "CAMPSAP
 linkage_region8 = c("NDUFA7", "RPS28", "KANK3", "ANGPTL4", "RAB11B-AS1", "MIR4999", "RAB11B", "MARCH2", "HNRNPM", 
                     "PRAM1", "ZNF414", "MYO1F", "ADAMTS10", "ACTL9", "OR2Z1", "ZNF558", "MBD3L1", "OR1M1", "MUC16")
 
-protein_coding_genes <- read.table("~/cre/data/protein_coding_genes.txt", stringsAsFactors=F, header=T)
+protein_coding_genes <- read_csv("~/cre/data/protein_coding_genes.csv")
 
 protein_coding_genes.bed = read.delim("~/cre/data/protein_coding_genes.bed", header=F, stringsAsFactors=F)
 colnames(protein_coding_genes.bed) = c("chrom","start","end","gene","ensembl_gene_id")
 
-protein_coding_genes.ens_ids <- read.table("~/cre/data/protein_coding_genes.ens_ids.txt", stringsAsFactors=F,header=T)
 genes_transcripts = read.csv("~/cre/data/genes.transcripts.ens_only.csv",stringsAsFactors = F)
 
 omim.file = "~/Desktop/reference_tables/omim_inheritance.csv"
@@ -101,14 +102,49 @@ if (file.exists(gtex_rpkm_file))
     gtex_rpkm = read.csv(gtex_rpkm_file, sep="", stringsAsFactors = F)
 }
 
-ensembl_w_description = read.delim2("~/cre/data/ensembl_w_description.txt", row.names=1, stringsAsFactors=F)
+ensembl_w_description <- read_csv("~/cre/data/ensembl_genes_w_description.csv")
+
 #gene_lengths = read.delim("~/Desktop/project_RNAseq_diagnostics/reference/gene_lengths.txt", stringsAsFactors=F, row.names=1)
 
-installation = function()
-{
+installation <- function(){
     source("http://bioconductor.org/biocLite.R")
     biocLite("edgeR")
     install.packages("pheatmap")
+}
+
+# input:
+# file_rpkm.csv - merged output of feature counts
+# sample_dictionary.csv: sample_name, sample_label, color
+# not filters for protein coding genes - filter upstream!
+# output: mds.png, mds.labels.png
+plot_mds <- function(file_rpkms.csv, sample_dictionary.csv){
+    counts <- read_csv(file_rpkms.csv) %>% dplyr::select(-ensembl_gene_id, 
+                                                  -external_gene_name,
+                                                  -gene_description)
+    sample_names <- tibble(sample_name = colnames(counts))
+    samples <- read_csv(sample_dictionary.csv)
+    
+    group <- factor(c(rep(1, ncol(counts))))
+    y <- DGEList(counts = counts, group = group, remove.zeros = T)
+
+    v_colors <- left_join(sample_names, samples, by = "sample_name") %>% 
+        dplyr::select(color) %>% unlist(use.names = F)
+        
+    png("mds.png", res = 300, width = 2000, height = 2000)
+    mds <- plotMDS(y)
+    plot(mds,
+         col = v_colors,
+         pch = 19,
+         xlab = "MDS dimension 1", 
+         ylab = "MDS dimension 2")
+    dev.off()
+    
+    v_labels <- left_join(sample_names, samples, by="sample_name") %>% 
+        dplyr::select(sample_label) %>% unlist(use.names = F)
+    
+    png("mds.labels.png", res = 300, width = 2000, height = 2000)
+    plotMDS(y, labels = v_labels, cex = 0.3)
+    dev.off()
 }
 
 get_genes_in_panels <- function(){
@@ -233,84 +269,68 @@ read.coverage2counts_dir = function(update=F)
 }
 
 # Loads a file with counts from feature_counts
-# loads gene lengths
-# loads gene names
 # calculates RPKMs
-# returns ENS_ID, rpkm, Gene_name
+# returns ensembl_gene_id, sample
 feature_counts2rpkm <- function(filename){
-    #test:
-    #filename="S01_1-1-B.bam.rpkm_counts.txt"
-    #first line in the file is a comment
-    counts <- read.delim(filename, stringsAsFactors=F, row.names=1, skip=1)
-    counts$Chr <- NULL
-    counts$Start <- NULL
-    counts$End <- NULL
-    counts$Strand <- NULL
-    
-    Gene_lengths <- counts$Length
-    counts$Length <- NULL
-    
-    counts <- rpkm(counts,Gene_lengths)
-    colnames(counts) <- gsub(".bam","",colnames(counts))
-    
+    # test:
+    # filename <- "S100_47-1-Myo.bam.feature_counts.txt"
+    # first line in the file is a comment
+    # filename <- "1130_BD-B175.bam.feature_counts.txt"
+    counts <- read_tsv(filename, skip = 1) %>% 
+                dplyr::select(Geneid, Length, last_col()) %>% 
+                dplyr::rename(ensembl_gene_id = Geneid, length = Length)
+
+    colnames(counts) <- gsub(".bam","", colnames(counts))
+                
+    sample_name <- colnames(counts)[3]
+    counts$rpkm <- rpkm(counts[,sample_name], counts$length)
+    counts <- counts %>% dplyr::select(ensembl_gene_id, rpkm) %>% rename(!!sample_name := rpkm)
     return(counts)
 }
 
 # reads feature counts in the current directory and calculate RPKMs
-read_feature_counts_dir <- function(update = F)
-{
-    if(file.exists("rpkms.txt") && update == F){
-        counts <- read.table("rpkms.txt")
-    }else{
-        files <- list.files(".","*feature_counts.txt")
-        counts <- feature_counts2rpkm(files[1])
-        for (file in tail(files,-1)){
-            print(file)
-            counts_buf <- feature_counts2rpkm(file)
-            counts <- merge_row_names(counts,counts_buf)
-        }
-        
-        counts <- merge(counts, ensembl_w_description, by.x = "row.names", by.y = "row.names")
-        row.names(counts) <- counts$Row.names
-        counts$Row.names <- NULL
-        counts$Gene_description <- NULL
-    
-        #remove a second entry of CLN3 from rpkm_counts.txt
-        counts <- counts[!row.names(counts) %in% c("ENSG00000261832","ENSG00000267059","ENSG00000200733","ENSG00000207199","ENSG00000252408",
-                                                  "ENSG00000212270","ENSG00000212377","ENSG00000167774"),]
-        
-        write.table(counts, "rpkms.txt", quote = F)
+# output: rpkms.csv
+feature_counts_dir2rpkm <- function(){
+    files <- list.files(".", "*feature_counts.txt")
+    counts <- feature_counts2rpkm(files[1])
+    for (file in tail(files, -1)){
+        counts_buf <- feature_counts2rpkm(file)
+        counts <- left_join(counts, counts_buf, by = "ensembl_gene_id")
     }
-    return(counts)
+    counts <- left_join(counts, ensembl_w_description, by = "ensembl_gene_id")
+    # remove a second entry of CLN3 and some other bad genes
+    counts <- counts %>% filter(!ensembl_gene_id %in% c("ENSG00000261832", "ENSG00000267059",
+                                                           "ENSG00000200733", "ENSG00000207199",
+                                                           "ENSG00000252408", "ENSG00000212270",
+                                                           "ENSG00000212377", "ENSG00000167774"))
+    write_excel_csv(counts, "rpkms.csv")
 }
 
-read.feature_counts <- function(filename){
+read_feature_counts <- function(filename){
     #first line in the file is a comment
-    counts <- read.delim(filename, stringsAsFactors = F, row.names = 1, skip = 1)
-    counts$Chr <- NULL
-    counts$Start <- NULL
-    counts$End <- NULL
-    counts$Strand <- NULL
-    counts$Length <- NULL
-    colnames(counts) <- gsub(".bam","", colnames(counts))
+    #test: filename="S05_4-1-F.bam.feature_counts.txt"
+    counts <- read_delim(filename, skip = 1, delim = "\t") %>% select(Geneid, last_col())
+    colnames(counts) <- c("ensembl_gene_id", gsub(".bam","", colnames(counts)[2]))
     return(counts) 
 }
 
 #reads all counts in the current directory
-read_feature_counts_dir <- function(update = F){
-    if(file.exists("raw_counts.txt") && update == F){
-        counts <- read.table("raw_counts.txt")
-    }else{
-        files <- list.files(".","*feature_counts.txt")
-        counts <- read.feature_counts(files[1])
-        for (file in tail(files,-1)){
-            print(paste0("Reading ",file))
-            counts_buf <- read.feature_counts(file)
-            counts <- merge_row_names(counts,counts_buf)
-        }
-        write.table(counts, "raw_counts.txt", quote = F)
+feature_counts_dir <- function(update = F){
+    files <- list.files(".", "*feature_counts.txt")
+    counts <- read_feature_counts(files[1])
+    for (file in tail(files, -1)){
+        counts_buf <- read_feature_counts(file)
+        counts <- left_join(counts, counts_buf, by = "ensembl_gene_id")
     }
-    return(counts)
+    write_excel_csv(counts, "raw_counts.csv")    
+}
+
+filter_protein_coding_genes <- function(rpkms.csv)
+{
+    counts <- read_csv(rpkms.csv)
+    counts <- counts %>% filter(ensembl_gene_id %in% protein_coding_genes$ensembl_gene_id) %>% drop_na()
+    new_name <- str_replace(rpkms.csv, ".csv",".protein_coding.csv")
+    write_excel_csv(counts, new_name)
 }
 
 # merge two dataframes by row.names and fix the row.names of the resulting df
@@ -348,34 +368,29 @@ read.tpm = function(update = F)
 #  http://software.broadinstitute.org/cancer/software/gsea/wiki/index.php/Data_formats#Expression_Data_Formats
 #  for GSEA it is important to report all genes - genome wide
 #  hopefully cpms are better than logcpms
-prepare_file_4gsea = function(counts,samples,prefix)
+prepare_file_4gsea <- function(counts, samples, prefix)
 {
-  t_cpm = cpm(counts,prior.count=1,log=F)
-  t_cpm = t_cpm[,samples]
+    t_cpm <- cpm(counts, prior.count = 1, log = F)
+    t_cpm <- t_cpm[,samples]
   
-  #remove rows with 0 expression
-  t_cpm = t_cpm[rowSums(t_cpm)>0,]
+    #remove rows with 0 expression
+    t_cpm = t_cpm[rowSums(t_cpm)>0,]
   
-  t_cpm = merge(protein_coding_genes,t_cpm,by.x='row.names',by.y='row.names',all = F)
+    result_file = paste0(prefix,".4gsea.txt")
   
-  rownames(t_cpm)=t_cpm$Row.names
-  t_cpm$Row.names = NULL
+    t_cpm <- merge(t_cpm, ensembl_w_description, by.x = "row.names", by.y = "row.names", all.x = T, all.y = F)
+    colnames(t_cpm)[1] <- "ensembl_gene_id"
+    
+    t_cpm = t_cpm[c("external_gene_name","ensembl_gene_id",paste0(samples))]
+    colnames(t_cpm)[1:2]=c("NAME","DESCRIPTION")
   
-  result_file=paste0(prefix,".4gsea.txt")
-  
-  t_cpm$ensembl_gene_id = row.names(t_cpm)
-  
-  t_cpm = t_cpm[c("gene_name","ensembl_gene_id",paste0(samples))]
-  colnames(t_cpm)[1:2]=c("NAME","DESCRIPTION")
-  
-  o = order(rowSums(t_cpm[,c(samples)]),decreasing = T)
-  t_cpm = t_cpm[o,]
-  d = duplicated(t_cpm$NAME)
-  dy = t_cpm[d,]$NAME
-  t_cpm = t_cpm[!d,]
-  nrow(t_cpm)
-  
-  write.table(t_cpm,result_file,quote=F,row.names = F,sep = "\t")
+    o = order(rowSums(t_cpm[,c(samples)]),decreasing = T)
+    t_cpm = t_cpm[o,]
+    d = duplicated(t_cpm$NAME)
+    dy = t_cpm[d,]$NAME
+    t_cpm = t_cpm[!d,]
+    nrow(t_cpm)
+    write.table(t_cpm,result_file,quote=F,row.names = F,sep = "\t")
 }
 
 # usually heatmap is a part of a bigger figure - we don't need a title
@@ -699,19 +714,77 @@ decode_tissue_type = function (row){
 
 splicing.read_novel_splice_events = function(file){
     ############################################################
-    # debug
-    # setwd("~/Desktop/work/splicing/muscle")
-    # file = "S12_9-1-M.bam_specific_rc5_norm_rc0.05_n_gtex_184"
+    # test
+    # setwd("~/Desktop/work/splicing_flank2")
+    # file <- "S05_4-1-F.bam.rare_junctions.txt"
     ############################################################
     
-    sample = strsplit(file,".",fixed=T)[[1]][1]
+    sample <- str_split_fixed(file, "\\.", 2)[1]
     print(sample)
-    splice_events = read.csv(file,stringsAsFactors=FALSE)
-    splice_events$sample = sample
-    #splice_events = merge(splice_events,omim,by.x = "gene", by.y = "Gene",all.x = T)
-    splice_events$Omim=""
-    splice_events = splice_events[,c("sample","gene","pos","annotation","read_count","norm_read_count",
-                                     "n_gtex_seen","total_gtex_read_count","Omim")]
-    #write.csv(splice_events,file = paste0(sample,".csv"),row.names = F)
+    splice_events <- read_csv(file)
+    splice_events$sample <- sample
+    splice_events$Omim <- ""
+    splice_events <- splice_events %>% select(sample, gene, pos, annotation, read_count, norm_read_count,
+                                     n_gtex_seen, total_gtex_read_count, Omim)
+    #write_excel_csv(splice_events, file = paste0(sample,".csv"))
     return(splice_events)
 }
+
+# plot go pictures
+# http://cbl-gorilla.cs.technion.ac.il/GOrilla
+# UP means upregulated in the second group, i.e. WT WT WT vs MUT MUT MUT, 
+# up is up in MUT
+go_analysis = function (lrt, prefix="")
+{
+    go <- goana(lrt, species = "Hs", geneid = "ENTREZID")
+    top_go <- 50
+    
+    for(on in c("BP","CC","MF"))
+    {
+        go.up <-  rownames_to_column(topGO(go, on = on, sort = "Up", n = top_go), var = "GO")
+        go.up$log2pvalue = -log2(go.up$P.Up)
+        
+        write_csv(go.up, paste0(prefix, "GO_",on,"_up.csv"))
+        
+        go.down = rownames_to_column(topGO(go, on = on, sort = "Down", n = top_go), var = "GO")
+        go.down$log2pvalue = -log2(go.down$P.Down)
+        
+        write_csv(go.down, paste0(prefix, "GO_",on,"_down.csv"))
+    }
+}
+
+#pathway analysis
+kegg_analysis = function (lrt, prefix="")
+{
+    kegg <- kegga(lrt, species = "Hs", geneid = "ENTREZID")
+    
+    kegg.up <- rownames_to_column(topKEGG(kegg, sort = "Up", number = 50), var = "KEGG")
+    kegg.up$log2pvalue <- -log2(kegg.up$P.Up)
+    write_csv(kegg.up, paste0(prefix, "kegg_up.csv"))
+    
+    kegg.down <- rownames_to_column(topKEGG(kegg, sort = "Down", number = 50), var = "KEGG")
+    kegg.down$log2pvalue <- -log2(kegg.down$P.Down)
+    write_csv(kegg.down, paste0(prefix,"kegg_down.csv"))
+}
+
+###############################################################################
+args <- commandArgs(trailingOnly = T)
+if (length(args) == 0 || args[1] == "--help"){
+    cat("Usage: Rscript function_name function_args\n")
+    cat("Available functions:\n")
+    cat("feature_counts_dir2rpkm\n")
+    cat("feature_counts_dir\n")
+    cat("filter_protein_coding_genes(rpkms.csv): rpkms.protein_coding.csv\n")
+    cat("plot_mds file_rpkms.csv sample_dictionary.csv\n")
+    cat("splicing.read_novel_splice_events sample.bam.rare_junctions.txt\n")
+}else{
+    cat(paste0("Running function: ", args[1],"\n"))
+    fcn <- get(args[1])
+    if (length(args)>1){
+        params <- as.list(tail(args, -1))
+        do.call(fcn, params)
+    }else{
+        fcn()
+    }
+}
+###############################################################################
