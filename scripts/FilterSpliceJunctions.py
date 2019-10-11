@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import os
 import sys
@@ -73,7 +73,7 @@ def sampleSpecificJunctions(sample, min_read, min_norm_read):
 			junction_counts.junction_id = junction_ref.rowid and
 			junction_ref.rowid = gene_ref.junction_id;'''.format(sample, min_read, min_norm_read, MAX_GTEX_SEEN), conn)
 
-	df.to_csv(output, index=False)
+	df.to_csv(output, index=False, sep="\t")
 
 def customSampleSpecificJunctions(sample, min_read, min_norm_read, max_n_gtex_seen, max_total_gtex_reads):
 
@@ -145,7 +145,7 @@ def customSampleSpecificJunctions(sample, min_read, min_norm_read, max_n_gtex_se
 		group by 
 		junction_ref.chromosome, junction_ref.start, junction_ref.stop;'''.format(sample, min_read, max_n_gtex_seen, max_total_gtex_reads, min_norm_read), conn)
 
-	df.to_csv(output, index=False)
+	df.to_csv(output, index=False, sep="\t")
 
 def sampleRatio(sample, junction_ratio):
 
@@ -201,13 +201,13 @@ def sampleRatio(sample, junction_ratio):
 			sample_ref.sample_name = "{}" and
 			junction_counts.read_count >= {} and
 			junction_counts.norm_read_count >= {} and
-			avg_patient_read_count * {} > avg_gtex_read_count and
+			junction_counts.read_count >= {} * avg_gtex_read_count and
 			junction_counts.norm_read_count!='NULL' and
 			sample_ref.rowid=junction_counts.bam_id and
 			junction_counts.junction_id = junction_ref.rowid and
 			junction_ref.rowid = gene_ref.junction_id;'''.format(sample, MIN_READ, MIN_NORM_READ, junction_ratio), conn)
 
-	df.to_csv(output, index=False)
+	df.to_csv(output, index=False, sep="\t")
 
 def printSamplesInDB():
 
@@ -257,7 +257,7 @@ def printAllJunctions():
 	    None
 	"""
 
-	output = 'all_junctions_n_gtex_' + str(countGTEX()) + '_n_patients_' + str(countPatients())
+	output = 'all_junctions_n_gtex_{}_n_patients_{}'.format(str(countGTEX()), str(countPatients()))
 
 	df = pd.read_sql_query('''select group_concat(gene_ref.gene) as genes,
 		(junction_ref.chromosome||':'||junction_ref.start||'-'||junction_ref.stop) as pos,
@@ -283,7 +283,7 @@ def printAllJunctions():
 		group by 
 		junction_ref.chromosome, junction_ref.start, junction_ref.stop;''', conn)
 
-	df.to_csv(output, index=False)
+	df.to_csv(output, index=False, sep="\t")
 
 if __name__=="__main__":
 	
